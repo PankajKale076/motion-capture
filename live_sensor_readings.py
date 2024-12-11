@@ -3,6 +3,7 @@ import asyncio
 import time
 from bleak import BleakClient
 
+ble_address = "CA:08:34:AF:38:7E"
 
 # Device Model Class
 class DeviceModel:
@@ -137,7 +138,7 @@ class DeviceModel:
             print(f"Unsupported rate: {rate}")
             return
         # Construct the write command
-        command = [0xFF, 0xAA, 0x03, rate_mapping[rate], 0x00]
+        command = [0xFF, 0xAA, 0x03, 0x64, 0x00]
         await self.client.write_gatt_char(self.writer_characteristic.uuid, bytes(command))
         print(f"Output rate set to {rate} Hz")
 
@@ -181,7 +182,7 @@ def process_data_callback(device):
 # Main function
 if __name__ == "__main__":
     # Replace "DEVICE_ADDRESS_HERE" with your device's Bluetooth address
-    BLE_DEVICE_ADDRESS = "FB:B1:17:87:57:EC"
+    BLE_DEVICE_ADDRESS = ble_address
     device = DeviceModel("WTWitmotion", BLE_DEVICE_ADDRESS, process_data_callback)
 
     # Start the BLE connection

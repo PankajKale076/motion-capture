@@ -122,14 +122,15 @@ class ArmController:
     def __init__(self, arm_ip):
         self.arm = XArmAPI(arm_ip)
         self.arm.motion_enable(enable=True)
-        self.arm.set_mode(0)
+        self.arm.set_mode(1)
         self.arm.set_state(0)
 
     def move_with_angles(self, roll, pitch, yaw):
         roll = roll % 360
         pitch = pitch % 360
         yaw = yaw % 360
-        self.arm.set_servo_cartesian([0, 0, 0, roll, pitch, yaw], is_radian=False)
+        code, curr_pos = self.arm.get_position()
+        self.arm.set_servo_cartesian([curr_pos[0], curr_pos[1], curr_pos[2], roll, pitch, yaw], is_radian=False, wait=False)
 
 # Callback to process IMU data and move the robotic arm
 def process_data_callback(device):
@@ -142,8 +143,8 @@ def process_data_callback(device):
     arm_controller.move_with_angles(roll, pitch, yaw)
 
 if __name__ == "__main__":
-    BLE_DEVICE_ADDRESS = "FB:B1:17:87:57:EC"
-    ARM_IP = "192.168.1.100"  # Replace with your xArm's IP address
+    BLE_DEVICE_ADDRESS = "CA:08:34:AF:38:7E"
+    ARM_IP = "192.168.1.211"  # Replace with your xArm's IP address
 
     arm_controller = ArmController(ARM_IP)
     device = DeviceModel("WTWitmotion", BLE_DEVICE_ADDRESS, process_data_callback)
