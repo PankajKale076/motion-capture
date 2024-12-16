@@ -1,0 +1,14 @@
+ble_device:
+  address: "CA:08:34:AF:38:7E"
+  name: "WTWitmotion"
+  service_uuid: "0000ffe5-0000-1000-8000-00805f9a34fb"
+  characteristic_uuid:
+    read: "0000ffe4-0000-1000-8000-00805f9a34fb"
+    write: "0000ffe9-0000-1000-8000-00805f9a34fb"
+  output_rate: 100  # Hz
+
+robotic_arm:
+  ip_address: "192.168.1.213"
+  settings:
+    mode: 1
+    initial_state: 0
