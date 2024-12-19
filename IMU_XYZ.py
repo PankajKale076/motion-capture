@@ -33,6 +33,21 @@ class DeviceModel:
         self.filter_window = 5  # Size of the filter window
         self.acc_buffer = []  # Buffer for smoothing acceleration
         self.last_valid_acc = [0, 0, 0]  # Store the last valid acceleration data
+        self.gravity_offset = [0, 0, 0]  # Store gravity offset
+        self.is_calibrated = False
+        self.calibration_samples = []
+        self.num_calibration_samples = 50  # Number of samples to use for calibration
+
+    def calibrate_gravity(self, acc_values):
+        """Calibrate the gravity offset when the sensor is stationary"""
+        if not self.is_calibrated:
+            self.calibration_samples.append(acc_values)
+            if len(self.calibration_samples) >= self.num_calibration_samples:
+                # Average the samples to get the gravity offset
+                self.gravity_offset = np.mean(self.calibration_samples, axis=0)
+                self.is_calibrated = True
+                print(f"Gravity calibration complete. Offset: {self.gravity_offset}")
+                self.calibration_samples = []  # Clear the samples
 
     def set(self, key, value):
         self.deviceData[key] = value
@@ -107,27 +122,52 @@ class DeviceModel:
 
     def processData(self, Bytes):
         if Bytes[1] == 0x61:
+            # Get acceleration values
             Ax = self.getSignInt16(Bytes[3] << 8 | Bytes[2]) / 32768 * 16
             Ay = self.getSignInt16(Bytes[5] << 8 | Bytes[4]) / 32768 * 16
             Az = self.getSignInt16(Bytes[7] << 8 | Bytes[6]) / 32768 * 16
+            
+            # Get angle values
             AngX = self.getSignInt16(Bytes[15] << 8 | Bytes[14]) / 32768 * 180
             AngY = self.getSignInt16(Bytes[17] << 8 | Bytes[16]) / 32768 * 180
             AngZ = self.getSignInt16(Bytes[19] << 8 | Bytes[18]) / 32768 * 180
 
+            acc_values = [Ax, Ay, Az]
+            
+            if not self.is_calibrated:
+                # Collect calibration samples when the sensor is stationary
+                self.calibrate_gravity(acc_values)
+                return
+            
+            # Subtract gravity offset from acceleration values
+            Ax -= self.gravity_offset[0]
+            Ay -= self.gravity_offset[1]
+            Az -= self.gravity_offset[2]
+            
+            # Apply smoothing after gravity compensation
             smoothed_acc = self.smooth_acceleration([Ax, Ay, Az])
+            
+            print(f"Smoothed Acc: {smoothed_acc[0]:.3f}, {smoothed_acc[1]:.3f}, {smoothed_acc[2]:.3f}")
 
-            # Update last valid acceleration data
-            if any(abs(a) > 0.01 for a in smoothed_acc):  # Threshold to detect movement
+            # Update last valid acceleration data with threshold
+            movement_threshold = 0.02  # Adjust this value based on testing
+            if any(abs(a) > movement_threshold for a in smoothed_acc):
                 self.last_valid_acc = smoothed_acc
 
-            Ax, Ay, Az = self.last_valid_acc  # Always use the last valid acceleration data
+            # Always use the last valid acceleration data
+            Ax, Ay, Az = self.last_valid_acc
+            
+            print(f"Last Valid Acc: {Ax:.3f}, {Ay:.3f}, {Az:.3f}")
 
+            # Store processed values
             self.set("AccX", round(Ax, 3))
             self.set("AccY", round(Ay, 3))
             self.set("AccZ", round(Az, 3))
             self.set("AngleX", round(AngX, 3))
             self.set("AngleY", round(AngY, 3))
             self.set("AngleZ", round(AngZ, 3))
+
+            # Call the callback method with updated values
             self.callback_method(self)
 
     def smooth_acceleration(self, acc_values):
@@ -223,18 +263,33 @@ class ArmController:
 
 # Callback to process IMU data and move the robotic arm
 def process_data_callback(device):
-    imu_data = device.deviceData
-    acc_x = imu_data.get("AccX", 0) * 5  # Scale factor for mapping mm movement
-    acc_y = imu_data.get("AccY", 0) * 5
-    acc_z = imu_data.get("AccZ", 0) * 5
+    if not device.is_calibrated:
+        print("Calibrating gravity offset... Keep the sensor still and flat...")
+        return
 
+    imu_data = device.deviceData
+    
+    # Add a deadzone to filter out tiny movements
+    deadzone = 0.001
+    
+    # Get acceleration values with deadzone
+    acc_x = imu_data.get("AccX", 0)
+    acc_y = imu_data.get("AccY", 0)
+    acc_z = imu_data.get("AccZ", 0)
+
+    print(f"deadzone acc_x: {acc_x:.3f}, acc_y: {acc_y:.3f}, acc_z: {acc_z:.3f}")
+
+    # Get angle values
     roll = imu_data.get("AngleX", 0)
     pitch = imu_data.get("AngleY", 0)
     yaw = imu_data.get("AngleZ", 0)
 
-    print(f"Moving Arm - Delta X: {acc_x} mm, Delta Y: {acc_y} mm, Delta Z: {acc_z} mm, Roll: {roll}, Pitch: {pitch}, Yaw: {yaw}")
-    arm_controller.move_with_sensor(acc_x, acc_y, acc_z, roll, pitch, yaw)
-
+    # Only move and print if there's actual movement detected
+    if abs(acc_x) > 0 or abs(acc_y) > 0 or abs(acc_z) > 0:
+        print(f"Moving Arm - Delta X: {acc_x:.3f} mm, Delta Y: {acc_y:.3f} mm, Delta Z: {acc_z:.3f} mm, "
+              f"Roll: {roll:.3f}, Pitch: {pitch:.3f}, Yaw: {yaw:.3f}")
+        arm_controller.move_with_sensor(acc_x, acc_y, acc_z, roll, pitch, yaw)
+        
 # Main logic to initialize the BLE device and robotic arm
 if __name__ == "__main__":
     arm_controller = ArmController(ARM_IP)
