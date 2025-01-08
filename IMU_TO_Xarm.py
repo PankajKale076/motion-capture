@@ -3,6 +3,8 @@ import asyncio
 import time
 from bleak import BleakClient
 from xarm.wrapper import XArmAPI
+import numpy as np
+from datetime import datetime
 
 # Device Model Class
 class DeviceModel:
@@ -87,9 +89,15 @@ class DeviceModel:
 
     def processData(self, Bytes):
         if Bytes[1] == 0x61:
+            Ax = self.getSignInt16(Bytes[3] << 8 | Bytes[2]) / 32768 * 16
+            Ay = self.getSignInt16(Bytes[5] << 8 | Bytes[4]) / 32768 * 16
+            Az = self.getSignInt16(Bytes[7] << 8 | Bytes[6]) / 32768 * 16
             AngX = self.getSignInt16(Bytes[15] << 8 | Bytes[14]) / 32768 * 180
             AngY = self.getSignInt16(Bytes[17] << 8 | Bytes[16]) / 32768 * 180
             AngZ = self.getSignInt16(Bytes[19] << 8 | Bytes[18]) / 32768 * 180
+            self.set("AccX", round(Ax, 3))
+            self.set("AccY", round(Ay, 3))
+            self.set("AccZ", round(Az, 3))
             self.set("AngleX", round(AngX, 3))
             self.set("AngleY", round(AngY, 3))
             self.set("AngleZ", round(AngZ, 3))
@@ -118,33 +126,117 @@ class DeviceModel:
         return num
 
 # Arm Control Class
+
+class PositionTracker:
+    def __init__(self):
+        # Initialize state variables
+        self.last_update = datetime.now()
+        self.velocity = np.zeros(3)  # Vx, Vy, Vz
+        self.position = np.zeros(3)  # X, Y, Z
+        self.last_accel = np.zeros(3)  # Last acceleration reading
+        
+        # Constants for filtering
+        self.accel_threshold = 0.03  # Minimum acceleration to consider (helps reduce drift)
+        self.accel_change_threshhold = 0.01
+        
+        # Scale factors for converting accelerometer units to m/s²
+        self.accel_scale = 9.81  # Assuming accelerometer values are in g's
+        
+        # Position scaling for robot workspace (adjust based on your robot's workspace)
+        self.position_scale = 5  # Scale factor to map position to robot coordinates
+        self.position_limits = np.array([
+            [-300, 300],  # X limits in mm
+            [-300, 300],  # Y limits in mm
+            [0, 500]      # Z limits in mm
+        ])
+
+    def update(self, accel_data):
+        """
+        Update position based on new accelerometer readings
+        accel_data: dict containing 'AccX', 'AccY', 'AccZ' in g's
+        Returns: tuple of (x, y, z) positions in robot coordinates
+        """
+        # Get time delta
+        current_time = datetime.now()
+        dt = (current_time - self.last_update).total_seconds()
+        self.last_update = current_time
+        
+        # Convert acceleration data to numpy array in m/s²
+        accel = np.array([
+            accel_data['AccX'],
+            accel_data['AccY'],
+            accel_data['AccZ'] + 1  # Add 1 to Z to remove gravity
+        ]) * self.accel_scale
+        
+        # Check for significant change in acceleration
+        accel_change = np.abs(accel - self.last_accel)
+        is_moving = np.any(accel_change > self.accel_change_threshhold)
+        
+        # Update last acceleration
+        self.last_accel = accel.copy()
+        
+        if not is_moving:
+            self.velocity = np.zeros(3)
+            return tuple(self.position * self.position_scale)
+        
+        # Only integrate acceleration if moving
+        if np.any(np.abs(accel) > self.accel_threshold):
+            self.velocity += accel * dt
+            self.position += self.velocity * dt
+            
+            # Apply position limits
+            self.position = np.clip(self.position, self.position_limits[:, 0], self.position_limits[:, 1])
+            
+        return tuple(self.position * self.position_scale)
 class ArmController:
     def __init__(self, arm_ip):
         self.arm = XArmAPI(arm_ip)
         self.arm.motion_enable(enable=True)
-        self.arm.set_mode(1)
+        self.arm.set_mode(0)
         self.arm.set_state(0)
+        self.position_tracker = PositionTracker()
+        
+        # Store initial position
+        code, self.initial_position = self.arm.get_position()
 
-    def move_with_angles(self, roll, pitch, yaw):
-        roll = roll % 360
-        pitch = pitch % 360
-        yaw = yaw % 360
-        code, curr_pos = self.arm.get_position()
-        self.arm.set_servo_cartesian([curr_pos[0], curr_pos[1], curr_pos[2], roll, pitch, yaw], is_radian=False, wait=False)
+    def move_with_sensor_data(self, sensor_data):
+        """
+        Move the arm based on sensor data
+        sensor_data: dict containing accelerometer and angle data
+        """
+        # Get position offset from accelerometer data
+        position_offset = self.position_tracker.update({
+            'AccX': sensor_data['AccX'],
+            'AccY': sensor_data['AccY'],
+            'AccZ': sensor_data['AccZ']
+        })
+        
+        # Get orientation from angle data
+        roll = sensor_data['AngleX']
+        pitch = sensor_data['AngleY']
+        yaw = sensor_data['AngleZ']
+        
+        # Calculate new absolute position
+        new_position = [
+            self.initial_position[0] + position_offset[0],
+            self.initial_position[1] + position_offset[1],
+            self.initial_position[2] + position_offset[2],
+            roll, pitch, yaw
+        ]
+        
+        print(f"Moving to position: {new_position}")
+        
+        # Move robot to new position
+        self.arm.set_servo_cartesian(new_position, is_radian=False, wait=False)
 
-# Callback to process IMU data and move the robotic arm
+# Modified callback function
 def process_data_callback(device):
-    imu_data = device.deviceData
-    roll = imu_data.get("AngleX", 0)
-    pitch = imu_data.get("AngleY", 0)
-    yaw = imu_data.get("AngleZ", 0)
-
-    print(f"Moving Arm - Roll: {roll}, Pitch: {pitch}, Yaw: {yaw}")
-    arm_controller.move_with_angles(roll, pitch, yaw)
+    sensor_data = device.deviceData
+    arm_controller.move_with_sensor_data(sensor_data)
 
 if __name__ == "__main__":
     BLE_DEVICE_ADDRESS = "CA:08:34:AF:38:7E"
-    ARM_IP = "192.168.1.211"  # Replace with your xArm's IP address
+    ARM_IP = "192.168.1.211"
 
     arm_controller = ArmController(ARM_IP)
     device = DeviceModel("WTWitmotion", BLE_DEVICE_ADDRESS, process_data_callback)
