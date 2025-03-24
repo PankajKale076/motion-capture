@@ -296,7 +296,7 @@ class ArmController:
             or pitch != pitch_constrained
             or yaw != yaw_constrained
         ):
-            print(f"Warning: Angles constrained to joint limits")
+            print("Warning: Angles constrained to joint limits")
             print(f"  Roll: {roll} -> {roll_constrained}")
             print(f"  Pitch: {pitch} -> {pitch_constrained}")
             print(f"  Yaw: {yaw} -> {yaw_constrained}")
